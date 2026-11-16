@@ -1,0 +1,70 @@
+{{define "gallery.html"}}{{template "header" "Avatar Gallery"}}
+      <header class="bg-gradient-to-r from-purple-600 to-blue-600 p-6">
+        <h1 class="text-3xl font-bold text-white text-center">Avatar Gallery</h1>
+        <p class="text-white/80 text-center mt-2">User: <span id="userId" class="font-mono">{{.UserID}}</span></p>
+      </header>
+
+      <main class="p-6 space-y-6">
+        <div class="flex justify-between items-center">
+          <a href="/web/upload" class="text-purple-200 hover:text-white underline">&larr; Upload new avatar</a>
+          <span class="text-white/70 text-sm">{{len .Avatars}} avatar(s)</span>
+        </div>
+
+        <div id="errorMessage" class="hidden bg-red-500/20 border border-red-500/50 text-red-200 px-4 py-3 rounded-lg"></div>
+
+        {{if .Avatars}}
+        <ul class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+          {{range .Avatars}}
+          <li class="bg-black/20 rounded-xl p-4 space-y-3" data-avatar-id="{{.ID}}">
+            <a href="{{.URL}}" target="_blank" rel="noopener">
+              <img src="{{.ThumbnailURL}}" alt="{{.FileName}}" loading="lazy"
+                class="w-full aspect-square object-cover rounded-lg shadow-lg">
+            </a>
+            <div class="text-sm text-white/80 space-y-1">
+              <p class="truncate" title="{{.FileName}}">{{.FileName}}</p>
+              <p>{{.Width}}&times;{{.Height}}, {{.Size}}</p>
+              <p>{{.CreatedAt}}</p>
+              <p>Processing: <span class="font-mono">{{.Status}}</span></p>
+            </div>
+            <div class="flex gap-2 text-sm">
+              <a href="{{.MetadataURL}}" target="_blank" rel="noopener"
+                class="flex-1 text-center bg-white/10 hover:bg-white/20 text-white py-2 rounded-lg">Metadata</a>
+              <button type="button" data-delete="{{.ID}}"
+                class="flex-1 bg-red-600/70 hover:bg-red-600 text-white py-2 rounded-lg">Delete</button>
+            </div>
+          </li>
+          {{end}}
+        </ul>
+        {{else}}
+        <p class="text-center text-white/70 py-12">No avatars yet.</p>
+        {{end}}
+      </main>
+
+  <script>
+    const userId = document.getElementById('userId').textContent;
+    const errorMessage = document.getElementById('errorMessage');
+
+    document.querySelectorAll('[data-delete]').forEach(function (button) {
+      button.addEventListener('click', async function () {
+        if (!confirm('Delete this avatar?')) {
+          return;
+        }
+        button.disabled = true;
+        try {
+          const response = await fetch('/api/v1/avatars/' + button.dataset.delete, {
+            method: 'DELETE',
+            headers: { 'X-User-ID': userId }
+          });
+          if (!response.ok) {
+            throw new Error('HTTP ' + response.status);
+          }
+          button.closest('li').remove();
+        } catch (error) {
+          errorMessage.textContent = 'Delete failed: ' + error.message;
+          errorMessage.classList.remove('hidden');
+          button.disabled = false;
+        }
+      });
+    });
+  </script>
+{{template "footer"}}{{end}}
