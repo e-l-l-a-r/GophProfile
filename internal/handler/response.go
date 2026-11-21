@@ -3,11 +3,13 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"go.uber.org/zap"
 
 	"github.com/e-l-l-a-r/gophprofile/internal/domain"
+	"github.com/e-l-l-a-r/gophprofile/internal/imageproc"
 	"github.com/e-l-l-a-r/gophprofile/internal/logger"
 )
 
@@ -39,6 +41,8 @@ func classifyError(r *http.Request, log *logger.Logger, err error) (status int, 
 		return http.StatusNotFound, errorResponse{Error: "Avatar not found"}
 	case errors.Is(err, domain.ErrForbidden):
 		return http.StatusForbidden, errorResponse{Error: "Forbidden", Details: "You can only delete your own avatars"}
+	case errors.Is(err, imageproc.ErrTooManyPixels):
+		return http.StatusBadRequest, errorResponse{Error: "Image too large", Details: fmt.Sprintf("Maximum resolution: %d pixels", imageproc.MaxPixels)}
 	case errors.Is(err, domain.ErrInvalidImage):
 		return http.StatusBadRequest, errorResponse{Error: "Invalid file format", Details: "Supported formats: jpeg, png, webp"}
 	case errors.Is(err, domain.ErrInvalidParameter):

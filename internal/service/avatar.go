@@ -128,9 +128,12 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (domain.Avat
 
 	event := domain.AvatarUploadEvent{AvatarID: id, UserID: avatar.UserID, S3Key: avatar.S3Key}
 	if err := s.publisher.Publish(ctx, domain.RoutingKeyAvatarUploaded, event); err != nil {
-		// Без события миниатюры не появятся: отмечаем это в состоянии обработки,
-		// оригинал при этом доступен.
-		return domain.Avatar{}, errors.Join(err, s.repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed))
+		s.log.Error("не удалось опубликовать событие загрузки", zap.String("аватарка", id), zap.Error(err))
+		if statusErr := s.repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed); statusErr != nil {
+			s.log.Error("не удалось обновить состояние обработки", zap.String("аватарка", id), zap.Error(statusErr))
+		} else {
+			avatar.ProcessingStatus = domain.ProcessingStatusFailed
+		}
 	}
 
 	return avatar, nil
