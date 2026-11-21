@@ -1,0 +1,27 @@
+# Конфигурация mockery v3: моки testify с методом EXPECT() кладутся рядом с
+# пакетом, объявившим интерфейс, в файлы mock_<interface>.go (не _test.go),
+# чтобы их могли использовать тесты других пакетов.
+# Пакеты и интерфейсы добавляются по мере появления: make mocks.
+all: false
+dir: "{{.InterfaceDir}}"
+filename: "mock_{{.InterfaceName | snakecase}}.go"
+pkgname: "{{.SrcPackageName}}"
+structname: "Mock{{.InterfaceName}}"
+template: testify
+template-data:
+  unroll-variadic: true
+packages:
+  github.com/e-l-l-a-r/gophprofile/internal/service:
+    interfaces:
+      Repository:
+      FileStorage:
+      Publisher:
+  github.com/e-l-l-a-r/gophprofile/internal/handler:
+    interfaces:
+      Avatars:
+      Checker:
+  github.com/e-l-l-a-r/gophprofile/internal/worker:
+    interfaces:
+      Repository:
+      FileStorage:
+      Consumer:
