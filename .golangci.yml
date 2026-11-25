@@ -1,0 +1,44 @@
+# Конфигурация golangci-lint (v2). Дополняет мультичекер cmd/staticlint:
+# запускается через make golangci в docker-образе.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+  settings:
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+  exclusions:
+    generated: lax
+    paths:
+      - "mock_.*\\.go$"
+    rules:
+      # В тестах контекст запроса не важен: httptest.NewRequest и net.DialTimeout
+      # допустимы.
+      - path: _test\.go$
+        linters:
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/e-l-l-a-r/gophprofile
