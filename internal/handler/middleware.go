@@ -7,7 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/e-l-l-a-r/gophprofile/internal/logger"
@@ -49,6 +53,22 @@ func requireUserID(next http.Handler) http.Handler {
 	})
 }
 
+func traceRoute(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		// Шаблон маршрута известен только после прохождения роутера.
+		if route := chi.RouteContext(r.Context()).RoutePattern(); route != "" {
+			span := trace.SpanFromContext(r.Context())
+			span.SetName(r.Method + " " + route)
+			span.SetAttributes(semconv.HTTPRoute(route))
+			// otelhttp не знает шаблона chi; без метки route метрики не разделить по маршрутам.
+			if labeler, ok := otelhttp.LabelerFromContext(r.Context()); ok {
+				labeler.Add(semconv.HTTPRoute(route))
+			}
+		}
+	})
+}
+
 // requestLogger логирует каждый запрос: метод, путь, статус, размер ответа и
 // длительность.
 func requestLogger(log *logger.Logger) func(http.Handler) http.Handler {
@@ -59,13 +79,13 @@ func requestLogger(log *logger.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(ww, r)
 
-			log.Info("запрос обработан",
-				zap.String("метод", r.Method),
-				zap.String("путь", r.URL.RequestURI()),
-				zap.Int("статус", ww.Status()),
-				zap.Int("размер", ww.BytesWritten()),
-				zap.Duration("длительность", time.Since(start)),
-				zap.String("запрос", middleware.GetReqID(r.Context())),
+			log.Ctx(r.Context()).Info("запрос обработан",
+				zap.String("method", r.Method),
+				zap.String("path", r.URL.RequestURI()),
+				zap.Int("status", ww.Status()),
+				zap.Int("size", ww.BytesWritten()),
+				zap.Duration("duration", time.Since(start)),
+				zap.String("request", middleware.GetReqID(r.Context())),
 			)
 		})
 	}
@@ -81,8 +101,8 @@ func recoverer(log *logger.Logger) func(http.Handler) http.Handler {
 					if err, ok := rec.(error); ok && errors.Is(err, http.ErrAbortHandler) {
 						panic(rec)
 					}
-					log.Error("паника при обработке запроса",
-						zap.String("метод", r.Method), zap.String("путь", r.URL.Path), zap.Any("паника", rec), zap.Stack("стек"))
+					log.Ctx(r.Context()).Error("паника при обработке запроса",
+						zap.String("method", r.Method), zap.String("path", r.URL.Path), zap.Any("panic", rec), zap.Stack("stack"))
 					writeError(w, http.StatusInternalServerError, "Internal server error", "")
 				}
 			}()

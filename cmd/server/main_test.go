@@ -59,6 +59,7 @@ func startServer(t *testing.T) (addr string, stop func() error) {
 	addr = freeAddr(t)
 	t.Setenv("ADDRESS", addr)
 	t.Setenv("LOG_LEVEL", "error")
+	t.Setenv("OTEL_TRACES_EXPORTER", "none")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

@@ -108,11 +108,11 @@ func TestHandleUpload_Success(t *testing.T) {
 	ctx := context.Background()
 
 	repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, nil).Once()
-	repo.EXPECT().GetAvatar(ctx, testID).Return(pendingAvatar(), nil).Once()
-	repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusProcessing).Return(nil).Once()
-	files.EXPECT().Download(ctx, originalKey).Return(pngImage(t), nil).Once()
+	repo.EXPECT().GetAvatar(mock.Anything, testID).Return(pendingAvatar(), nil).Once()
+	repo.EXPECT().UpdateProcessingStatus(mock.Anything, testID, domain.ProcessingStatusProcessing).Return(nil).Once()
+	files.EXPECT().Download(mock.Anything, originalKey).Return(pngImage(t), nil).Once()
 	expectThumbnailPuts(t, files)
-	repo.EXPECT().CompleteProcessing(ctx, testID, thumbKeys).Return(nil).Once()
+	repo.EXPECT().CompleteProcessing(mock.Anything, testID, thumbKeys).Return(nil).Once()
 	repo.EXPECT().MarkMessageProcessed(ctx, testMsg).Return(nil).Once()
 
 	require.NoError(t, w.HandleUpload(ctx, uploadMsg(t, testMsg)))
@@ -133,7 +133,7 @@ func TestHandleUpload_Idempotency(t *testing.T) {
 		done := pendingAvatar()
 		done.ProcessingStatus = domain.ProcessingStatusCompleted
 		repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, nil).Once()
-		repo.EXPECT().GetAvatar(ctx, testID).Return(done, nil).Once()
+		repo.EXPECT().GetAvatar(mock.Anything, testID).Return(done, nil).Once()
 		repo.EXPECT().MarkMessageProcessed(ctx, testMsg).Return(nil).Once()
 
 		require.NoError(t, w.HandleUpload(ctx, uploadMsg(t, testMsg)))
@@ -142,7 +142,7 @@ func TestHandleUpload_Idempotency(t *testing.T) {
 	t.Run("аватарка удалена до обработки", func(t *testing.T) {
 		w, repo, _ := newWorker(t)
 		repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, nil).Once()
-		repo.EXPECT().GetAvatar(ctx, testID).Return(domain.Avatar{}, domain.ErrAvatarNotFound).Once()
+		repo.EXPECT().GetAvatar(mock.Anything, testID).Return(domain.Avatar{}, domain.ErrAvatarNotFound).Once()
 		repo.EXPECT().MarkMessageProcessed(ctx, testMsg).Return(nil).Once()
 
 		require.NoError(t, w.HandleUpload(ctx, uploadMsg(t, testMsg)))
@@ -151,12 +151,12 @@ func TestHandleUpload_Idempotency(t *testing.T) {
 	t.Run("удалена во время обработки - миниатюры удаляются", func(t *testing.T) {
 		w, repo, files := newWorker(t)
 		repo.EXPECT().IsMessageProcessed(ctx, "").Return(false, nil).Maybe()
-		repo.EXPECT().GetAvatar(ctx, testID).Return(pendingAvatar(), nil).Once()
-		repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusProcessing).Return(nil).Once()
-		files.EXPECT().Download(ctx, originalKey).Return(pngImage(t), nil).Once()
+		repo.EXPECT().GetAvatar(mock.Anything, testID).Return(pendingAvatar(), nil).Once()
+		repo.EXPECT().UpdateProcessingStatus(mock.Anything, testID, domain.ProcessingStatusProcessing).Return(nil).Once()
+		files.EXPECT().Download(mock.Anything, originalKey).Return(pngImage(t), nil).Once()
 		expectThumbnailPuts(t, files)
-		repo.EXPECT().CompleteProcessing(ctx, testID, thumbKeys).Return(domain.ErrAvatarNotFound).Once()
-		files.EXPECT().Delete(ctx, thumbKeys["100x100"], thumbKeys["300x300"]).Return(nil).Once()
+		repo.EXPECT().CompleteProcessing(mock.Anything, testID, thumbKeys).Return(domain.ErrAvatarNotFound).Once()
+		files.EXPECT().Delete(mock.Anything, thumbKeys["100x100"], thumbKeys["300x300"]).Return(nil).Once()
 
 		require.NoError(t, w.HandleUpload(ctx, uploadMsg(t, "")), "сообщение без идентификатора тоже обрабатывается")
 	})
@@ -168,12 +168,12 @@ func TestHandleUpload_Retry(t *testing.T) {
 
 	repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, errBoom).Once()
 	repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, nil).Once()
-	repo.EXPECT().GetAvatar(ctx, testID).Return(pendingAvatar(), nil).Twice()
-	repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusProcessing).Return(nil).Twice()
-	files.EXPECT().Download(ctx, originalKey).Return(nil, errBoom).Once()
-	files.EXPECT().Download(ctx, originalKey).Return(pngImage(t), nil).Once()
+	repo.EXPECT().GetAvatar(mock.Anything, testID).Return(pendingAvatar(), nil).Twice()
+	repo.EXPECT().UpdateProcessingStatus(mock.Anything, testID, domain.ProcessingStatusProcessing).Return(nil).Twice()
+	files.EXPECT().Download(mock.Anything, originalKey).Return(nil, errBoom).Once()
+	files.EXPECT().Download(mock.Anything, originalKey).Return(pngImage(t), nil).Once()
 	expectThumbnailPuts(t, files)
-	repo.EXPECT().CompleteProcessing(ctx, testID, thumbKeys).Return(nil).Once()
+	repo.EXPECT().CompleteProcessing(mock.Anything, testID, thumbKeys).Return(nil).Once()
 	repo.EXPECT().MarkMessageProcessed(ctx, testMsg).Return(errBoom).Once()
 	repo.EXPECT().MarkMessageProcessed(ctx, testMsg).Return(nil).Once()
 
@@ -193,9 +193,9 @@ func TestHandleUpload_Failures(t *testing.T) {
 	t.Run("попытки исчерпаны - состояние failed", func(t *testing.T) {
 		w, repo, files := newWorker(t)
 		repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, nil).Once()
-		repo.EXPECT().GetAvatar(ctx, testID).Return(pendingAvatar(), nil).Times(3)
-		repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusProcessing).Return(nil).Times(3)
-		files.EXPECT().Download(ctx, originalKey).Return(nil, errBoom).Times(3)
+		repo.EXPECT().GetAvatar(mock.Anything, testID).Return(pendingAvatar(), nil).Times(3)
+		repo.EXPECT().UpdateProcessingStatus(mock.Anything, testID, domain.ProcessingStatusProcessing).Return(nil).Times(3)
+		files.EXPECT().Download(mock.Anything, originalKey).Return(nil, errBoom).Times(3)
 		repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusFailed).Return(nil).Once()
 
 		require.ErrorIs(t, w.HandleUpload(ctx, uploadMsg(t, testMsg)), errBoom)
@@ -204,9 +204,9 @@ func TestHandleUpload_Failures(t *testing.T) {
 	t.Run("нет оригинала - без повторов", func(t *testing.T) {
 		w, repo, files := newWorker(t)
 		repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, nil).Once()
-		repo.EXPECT().GetAvatar(ctx, testID).Return(pendingAvatar(), nil).Once()
-		repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusProcessing).Return(nil).Once()
-		files.EXPECT().Download(ctx, originalKey).Return(nil, storage.ErrObjectNotFound).Once()
+		repo.EXPECT().GetAvatar(mock.Anything, testID).Return(pendingAvatar(), nil).Once()
+		repo.EXPECT().UpdateProcessingStatus(mock.Anything, testID, domain.ProcessingStatusProcessing).Return(nil).Once()
+		files.EXPECT().Download(mock.Anything, originalKey).Return(nil, storage.ErrObjectNotFound).Once()
 		repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusFailed).Return(nil).Once()
 
 		require.ErrorIs(t, w.HandleUpload(ctx, uploadMsg(t, testMsg)), storage.ErrObjectNotFound)
@@ -215,9 +215,9 @@ func TestHandleUpload_Failures(t *testing.T) {
 	t.Run("битое изображение - без повторов", func(t *testing.T) {
 		w, repo, files := newWorker(t)
 		repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, nil).Once()
-		repo.EXPECT().GetAvatar(ctx, testID).Return(pendingAvatar(), nil).Once()
-		repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusProcessing).Return(nil).Once()
-		files.EXPECT().Download(ctx, originalKey).Return([]byte("not an image"), nil).Once()
+		repo.EXPECT().GetAvatar(mock.Anything, testID).Return(pendingAvatar(), nil).Once()
+		repo.EXPECT().UpdateProcessingStatus(mock.Anything, testID, domain.ProcessingStatusProcessing).Return(nil).Once()
+		files.EXPECT().Download(mock.Anything, originalKey).Return([]byte("not an image"), nil).Once()
 		repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusFailed).Return(domain.ErrAvatarNotFound).Once()
 
 		require.ErrorIs(t, w.HandleUpload(ctx, uploadMsg(t, testMsg)), imageproc.ErrUnsupportedFormat)
@@ -228,7 +228,7 @@ func TestHandleUpload_Failures(t *testing.T) {
 		avatar := pendingAvatar()
 		avatar.MimeType = "image/gif"
 		repo.EXPECT().IsMessageProcessed(ctx, testMsg).Return(false, nil).Once()
-		repo.EXPECT().GetAvatar(ctx, testID).Return(avatar, nil).Once()
+		repo.EXPECT().GetAvatar(mock.Anything, testID).Return(avatar, nil).Once()
 		repo.EXPECT().UpdateProcessingStatus(ctx, testID, domain.ProcessingStatusFailed).Return(errBoom).Once()
 
 		err := w.HandleUpload(ctx, uploadMsg(t, testMsg))
@@ -239,10 +239,15 @@ func TestHandleUpload_Failures(t *testing.T) {
 	t.Run("остановка - статус не меняется", func(t *testing.T) {
 		w, repo, _ := newWorker(t)
 		canceled, cancel := context.WithCancel(ctx)
-		repo.EXPECT().IsMessageProcessed(canceled, testMsg).Return(false, nil).Once()
-		repo.EXPECT().GetAvatar(canceled, testID).RunAndReturn(func(context.Context, string) (domain.Avatar, error) {
+		defer cancel()
+		propagatesCancellation := mock.MatchedBy(func(got context.Context) bool {
+			return got != nil && got.Done() == canceled.Done()
+		})
+		repo.EXPECT().IsMessageProcessed(propagatesCancellation, testMsg).Return(false, nil).Once()
+		repo.EXPECT().GetAvatar(propagatesCancellation, testID).RunAndReturn(func(got context.Context, _ string) (domain.Avatar, error) {
 			cancel()
-			return domain.Avatar{}, context.Canceled
+			require.ErrorIs(t, got.Err(), context.Canceled)
+			return domain.Avatar{}, got.Err()
 		}).Once()
 
 		require.ErrorIs(t, w.HandleUpload(canceled, uploadMsg(t, testMsg)), context.Canceled)

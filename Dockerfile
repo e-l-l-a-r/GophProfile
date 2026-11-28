@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 # Запуск: сервер и воркер в одном образе, нужная программа выбирается командой.
 # Бинарники связаны с musl динамически, поэтому базовый образ - тоже alpine.
 FROM alpine:3.22
-RUN apk add --no-cache ca-certificates tzdata \
+RUN apk add --no-cache ca-certificates tzdata wget \
     && adduser -D -H -u 10001 app
 COPY --from=builder /out/server /out/worker /usr/local/bin/
 USER app

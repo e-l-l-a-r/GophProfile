@@ -9,6 +9,10 @@ import (
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -58,7 +62,7 @@ func (c *Client) Consume(ctx context.Context, queue string, concurrency int, han
 		}
 
 		c.log.Warn("потребление из очереди прервано, переподключение",
-			zap.String("очередь", queue), zap.Duration("задержка", delay), zap.Error(err))
+			zap.String("queue", queue), zap.Duration("delay", delay), zap.Error(err))
 
 		select {
 		case <-ctx.Done():
@@ -87,7 +91,7 @@ func (c *Client) consumeOnce(ctx context.Context, queue string, concurrency int,
 	if err != nil {
 		return false, fmt.Errorf("не удалось подписаться на очередь %q: %w", queue, err)
 	}
-	c.log.Info("подписка на очередь оформлена", zap.String("очередь", queue), zap.Int("обработчиков", concurrency))
+	c.log.Info("подписка на очередь оформлена", zap.String("queue", queue), zap.Int("handlers", concurrency))
 
 	// После отмены ctx брокер перестаёт присылать сообщения, а канал deliveries
 	// закрывается, что завершает обработчики.
@@ -111,8 +115,17 @@ func (c *Client) consumeOnce(ctx context.Context, queue string, concurrency int,
 // - Ack, при ошибке - Nack без возврата в очередь (сообщение уходит в очередь
 // недоставленных), при остановке - Nack с возвратом в очередь.
 func (c *Client) handleDelivery(ctx context.Context, d amqp.Delivery, handler Handler) {
+	ctx = otel.GetTextMapPropagator().Extract(ctx, traceHeaders(d.Headers))
+	ctx, span := otel.Tracer("gophprofile/broker").Start(ctx, "rabbitmq.process",
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.String("messaging.system", "rabbitmq"),
+			attribute.String("messaging.destination.name", d.Exchange),
+			attribute.String("messaging.rabbitmq.destination.routing_key", d.RoutingKey)),
+	)
+	defer span.End()
+
 	msg := Message{ID: d.MessageId, RoutingKey: d.RoutingKey, Body: d.Body, Redelivered: d.Redelivered}
-	log := c.log.With(zap.String("сообщение", msg.ID), zap.String("ключ", msg.RoutingKey))
+	log := c.log.Ctx(ctx).With(zap.String("message", msg.ID), zap.String("key", msg.RoutingKey))
 
 	err := safeHandle(ctx, handler, msg)
 
@@ -129,6 +142,9 @@ func (c *Client) handleDelivery(ctx context.Context, d amqp.Delivery, handler Ha
 	}
 	if ackErr != nil {
 		log.Error("не удалось подтвердить сообщение", zap.Error(ackErr))
+	}
+	if err != nil || ackErr != nil {
+		span.SetStatus(codes.Error, "")
 	}
 }
 

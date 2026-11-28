@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/e-l-l-a-r/gophprofile/internal/domain"
+	"github.com/e-l-l-a-r/gophprofile/internal/imageproc"
 	"github.com/e-l-l-a-r/gophprofile/internal/logger"
 	"github.com/e-l-l-a-r/gophprofile/internal/service"
 	"github.com/e-l-l-a-r/gophprofile/web"
@@ -198,6 +200,15 @@ func TestUpload_Errors(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest,
 			wantBody:   `{"error":"Invalid file format","details":"Supported formats: jpeg, png, webp"}`,
+		},
+		{
+			name:    "слишком большое разрешение",
+			request: func(t *testing.T) *http.Request { return uploadRequest(t, "file", "a.png", []byte("img"), testUser) },
+			setup: func(m *MockAvatars) {
+				m.EXPECT().Upload(mock.Anything, mock.Anything).Return(domain.Avatar{}, fmt.Errorf("%w: %w", domain.ErrInvalidImage, imageproc.ErrTooManyPixels)).Once()
+			},
+			wantStatus: http.StatusBadRequest,
+			wantBody:   `{"error":"Image too large","details":"Maximum resolution: 50000000 pixels"}`,
 		},
 		{
 			name:    "внутренняя ошибка",

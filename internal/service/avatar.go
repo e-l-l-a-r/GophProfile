@@ -10,14 +10,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
 
 	"github.com/e-l-l-a-r/gophprofile/internal/domain"
 	"github.com/e-l-l-a-r/gophprofile/internal/imageproc"
 	"github.com/e-l-l-a-r/gophprofile/internal/logger"
 	"github.com/e-l-l-a-r/gophprofile/internal/storage"
+	"github.com/e-l-l-a-r/gophprofile/internal/telemetry"
 )
 
 // Repository - хранилище метаданных аватарок.
@@ -94,11 +98,22 @@ func NewAvatarService(repo Repository, files FileStorage, publisher Publisher, l
 // Запись в репозитории создаётся до загрузки файла в состоянии uploading:
 // так файл в хранилище никогда не остаётся без метаданных, а сбой загрузки
 // отражается в состоянии записи.
-func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (domain.Avatar, error) {
+func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (_ domain.Avatar, err error) {
+	ctx, span := otel.Tracer("gophprofile/avatar").Start(ctx, "avatar.upload")
+	defer telemetry.EndSpan(span, &err)
+	start := time.Now()
+	defer func() { telemetry.RecordUpload(ctx, start, err) }()
+	span.SetAttributes(
+		attribute.String("user_id", in.UserID),
+		attribute.String("file_name", in.FileName),
+		attribute.Int("file_size", len(in.Data)),
+	)
+
 	info, err := imageproc.Inspect(in.Data)
 	if err != nil {
 		return domain.Avatar{}, fmt.Errorf("%w: %w", domain.ErrInvalidImage, err)
 	}
+	span.SetAttributes(attribute.String("mime_type", info.Format.MimeType()))
 
 	id := uuid.NewString()
 	avatar, err := s.repo.CreateAvatar(ctx, domain.Avatar{
@@ -128,9 +143,9 @@ func (s *AvatarService) Upload(ctx context.Context, in UploadInput) (domain.Avat
 
 	event := domain.AvatarUploadEvent{AvatarID: id, UserID: avatar.UserID, S3Key: avatar.S3Key}
 	if err := s.publisher.Publish(ctx, domain.RoutingKeyAvatarUploaded, event); err != nil {
-		s.log.Error("не удалось опубликовать событие загрузки", zap.String("аватарка", id), zap.Error(err))
+		s.log.Ctx(ctx).Error("не удалось опубликовать событие загрузки", zap.String("avatar", id), zap.Error(err))
 		if statusErr := s.repo.UpdateProcessingStatus(ctx, id, domain.ProcessingStatusFailed); statusErr != nil {
-			s.log.Error("не удалось обновить состояние обработки", zap.String("аватарка", id), zap.Error(statusErr))
+			s.log.Ctx(ctx).Error("не удалось обновить состояние обработки", zap.String("avatar", id), zap.Error(statusErr))
 		} else {
 			avatar.ProcessingStatus = domain.ProcessingStatusFailed
 		}
@@ -187,7 +202,11 @@ func (s *AvatarService) DeleteLatest(ctx context.Context, userID, requesterID st
 }
 
 // delete проверяет владельца и удаляет аватарку.
-func (s *AvatarService) delete(ctx context.Context, avatar domain.Avatar, requesterID string) error {
+func (s *AvatarService) delete(ctx context.Context, avatar domain.Avatar, requesterID string) (err error) {
+	ctx, span := otel.Tracer("gophprofile/avatar").Start(ctx, "avatar.delete")
+	defer telemetry.EndSpan(span, &err)
+	defer func() { telemetry.RecordDelete(ctx, err) }()
+
 	if avatar.UserID != requesterID {
 		return domain.ErrForbidden
 	}
@@ -201,8 +220,8 @@ func (s *AvatarService) delete(ctx context.Context, avatar domain.Avatar, reques
 	if err := s.publisher.Publish(ctx, domain.RoutingKeyAvatarDeleted, event); err != nil {
 		// Для клиента аватарка уже удалена; без события в хранилище останутся
 		// файлы, которые нужно удалить вручную по ключам из лога.
-		s.log.Error("не удалось опубликовать событие удаления, файлы остались в хранилище",
-			zap.String("аватарка", deleted.ID), zap.Strings("ключи", event.S3Keys), zap.Error(err))
+		s.log.Ctx(ctx).Error("не удалось опубликовать событие удаления, файлы остались в хранилище",
+			zap.String("avatar", deleted.ID), zap.Strings("keys", event.S3Keys), zap.Error(err))
 	}
 
 	return nil
@@ -212,7 +231,10 @@ func (s *AvatarService) delete(ctx context.Context, avatar domain.Avatar, reques
 // Миниатюра, которую воркер ещё не создал, строится на лету. Возвращает
 // domain.ErrInvalidParameter для некорректных размера или формата и
 // domain.ErrAvatarNotFound, если аватарки нет.
-func (s *AvatarService) Image(ctx context.Context, id string, req ImageRequest) (Image, error) {
+func (s *AvatarService) Image(ctx context.Context, id string, req ImageRequest) (_ Image, err error) {
+	ctx, span := otel.Tracer("gophprofile/avatar").Start(ctx, "avatar.image")
+	defer telemetry.EndSpan(span, &err)
+
 	size, format, err := parseImageRequest(req)
 	if err != nil {
 		return Image{}, err

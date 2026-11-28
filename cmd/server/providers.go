@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/e-l-l-a-r/gophprofile/internal/repository"
 	"github.com/e-l-l-a-r/gophprofile/internal/service"
 	"github.com/e-l-l-a-r/gophprofile/internal/storage"
+	"github.com/e-l-l-a-r/gophprofile/internal/telemetry"
 	"github.com/e-l-l-a-r/gophprofile/web"
 )
 
@@ -47,15 +51,49 @@ type infra struct {
 }
 
 // provideLogger создаёт логгер по итоговой конфигурации.
-func provideLogger(conf Config) (*logger.Logger, error) {
-	return logger.New(conf.LogLevel)
+func provideLogger(lc fx.Lifecycle, conf Config) (*logger.Logger, error) {
+	log, err := logger.New(conf.LogLevel)
+	if err != nil {
+		return nil, err
+	}
+	lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return log.Shutdown(shutdownCtx)
+	}})
+	return log, nil
 }
 
-// provideInfra подключается к PostgreSQL, S3 и RabbitMQ. При старте
-// приложение проверяет базу и применяет миграции, создаёт бакет и
-// подключается к брокеру; при остановке закрывает подключения. Хук
-// регистрируется раньше хука сервера, поэтому подключения закрываются уже
-// после остановки сервера.
+// Хук регистрируется до HTTP-сервера, чтобы сбросить спаны после завершения запросов.
+func registerTracing(lc fx.Lifecycle) {
+	var provider *sdktrace.TracerProvider
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			var err error
+			provider, err = telemetry.NewTracerProvider(ctx, "gophprofile-server")
+			return err
+		},
+		OnStop: func(ctx context.Context) error {
+			return telemetry.ShutdownTracerProvider(ctx, provider)
+		},
+	})
+}
+
+func provideMeterProvider(lc fx.Lifecycle) (*metric.MeterProvider, error) {
+	provider, err := telemetry.NewMeterProvider(context.Background(), "gophprofile-server")
+	if err != nil {
+		return nil, err
+	}
+	lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		_ = provider.Shutdown(shutdownCtx)
+		return nil
+	}})
+	return provider, nil
+}
+
+// provideInfra подключается к PostgreSQL, S3 и RabbitMQ и управляет их жизненным циклом.
 func provideInfra(lc fx.Lifecycle, conf Config, log *logger.Logger) (infra, error) {
 	pg, err := repository.NewPostgres(conf.DatabaseDSN)
 	if err != nil {
@@ -83,6 +121,9 @@ func provideInfra(lc fx.Lifecycle, conf Config, log *logger.Logger) (infra, erro
 			if err := startInfra(ctx, pg, s3, mq, log); err != nil {
 				return errors.Join(err, mq.Close(), pg.Close())
 			}
+			if err := registerInfraMetrics(pg, mq); err != nil {
+				return errors.Join(err, mq.Close(), pg.Close())
+			}
 
 			return nil
 		},
@@ -97,6 +138,20 @@ func provideInfra(lc fx.Lifecycle, conf Config, log *logger.Logger) (infra, erro
 		Publisher:  mq,
 		Checkers:   map[string]handler.Checker{"database": pg, "storage": s3, "broker": mq},
 	}, nil
+}
+
+// registerInfraMetrics подключает метрики пула БД, размера хранилища и очередей.
+// Регистрации живут до завершения процесса.
+func registerInfraMetrics(pg *repository.Postgres, mq *broker.Client) error {
+	for _, register := range []func() (func() error, error){
+		pg.RegisterDBMetrics, pg.RegisterStorageMetric, mq.RegisterQueueMetrics,
+	} {
+		if _, err := register(); err != nil {
+			return fmt.Errorf("не удалось зарегистрировать метрики: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // startInfra проверяет базу и применяет миграции, создаёт бакет и
@@ -124,12 +179,17 @@ func provideAvatarService(
 }
 
 // provideRouter создаёт маршрутизатор HTTP-интерфейса.
-func provideRouter(avatars *service.AvatarService, checkers map[string]handler.Checker, conf Config, log *logger.Logger) http.Handler {
-	return handler.New(avatars, handler.Web{Static: web.Static, Templates: web.Templates}, handler.Config{
+func provideRouter(provider *metric.MeterProvider, avatars *service.AvatarService, checkers map[string]handler.Checker, conf Config, log *logger.Logger) http.Handler {
+	router := handler.New(avatars, handler.Web{Static: web.Static, Templates: web.Templates}, handler.Config{
 		Checkers:      checkers,
 		MaxUploadSize: conf.MaxUploadSize,
 		HealthTimeout: healthTimeout,
 	}, log).Routes()
+	return otelhttp.NewHandler(router, "gophprofile-server",
+		otelhttp.WithMeterProvider(provider),
+		otelhttp.WithPropagators(telemetry.Propagator()),
+		otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method }),
+	)
 }
 
 // provideListener занимает сетевой адрес сервера. Адрес занимается при сборке
@@ -171,7 +231,7 @@ func provideHTTPServer(
 
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) error {
-			log.Info("HTTP-сервер запущен", zap.String("адрес", ln.Addr().String()))
+			log.Info("HTTP-сервер запущен", zap.String("address", ln.Addr().String()))
 
 			go func() {
 				if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

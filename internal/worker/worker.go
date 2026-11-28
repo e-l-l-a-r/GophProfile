@@ -19,6 +19,7 @@ import (
 	"slices"
 	"sync"
 
+	"go.opentelemetry.io/otel"
 	"go.uber.org/zap"
 
 	"github.com/e-l-l-a-r/gophprofile/internal/broker"
@@ -27,6 +28,7 @@ import (
 	"github.com/e-l-l-a-r/gophprofile/internal/logger"
 	"github.com/e-l-l-a-r/gophprofile/internal/retry"
 	"github.com/e-l-l-a-r/gophprofile/internal/storage"
+	"github.com/e-l-l-a-r/gophprofile/internal/telemetry"
 )
 
 // Repository - хранилище метаданных аватарок и обработанных сообщений.
@@ -100,7 +102,8 @@ func (w *Worker) Run(ctx context.Context, consumer Consumer) error {
 
 // HandleUpload обрабатывает событие загрузки: создаёт миниатюры оригинала и
 // отмечает обработку завершённой.
-func (w *Worker) HandleUpload(ctx context.Context, msg broker.Message) error {
+func (w *Worker) HandleUpload(ctx context.Context, msg broker.Message) (err error) {
+	defer func() { telemetry.RecordProcessing(ctx, "upload", err) }()
 	var event domain.AvatarUploadEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil || event.AvatarID == "" {
 		return fmt.Errorf("некорректное событие загрузки: %w", errors.Join(err, errEmptyAvatarID(event.AvatarID)))
@@ -124,7 +127,8 @@ func (w *Worker) HandleUpload(ctx context.Context, msg broker.Message) error {
 
 // HandleDelete обрабатывает событие удаления: удаляет файлы аватарки из
 // хранилища. Удаление отсутствующих файлов ошибкой не считается.
-func (w *Worker) HandleDelete(ctx context.Context, msg broker.Message) error {
+func (w *Worker) HandleDelete(ctx context.Context, msg broker.Message) (err error) {
+	defer func() { telemetry.RecordProcessing(ctx, "delete", err) }()
 	var event domain.AvatarDeleteEvent
 	if err := json.Unmarshal(msg.Body, &event); err != nil || event.AvatarID == "" {
 		return fmt.Errorf("некорректное событие удаления: %w", errors.Join(err, errEmptyAvatarID(event.AvatarID)))
@@ -150,7 +154,7 @@ func (w *Worker) once(ctx context.Context, msg broker.Message, process func(ctx 
 			return err
 		}
 		if processed {
-			w.log.Info("сообщение уже обработано, пропускаю", zap.String("сообщение", msg.ID))
+			w.log.Ctx(ctx).Info("сообщение уже обработано, пропускаю", zap.String("message", msg.ID))
 			return nil
 		}
 	}
@@ -171,10 +175,13 @@ func (w *Worker) once(ctx context.Context, msg broker.Message, process func(ctx 
 // createThumbnails создаёт миниатюры аватарки id. Аватарка, которая уже
 // обработана или удалена, пропускается. Ошибки, которые не исправятся
 // повтором (нет оригинала, битое изображение), помечаются постоянными.
-func (w *Worker) createThumbnails(ctx context.Context, id string) error {
+func (w *Worker) createThumbnails(ctx context.Context, id string) (err error) {
+	ctx, span := otel.Tracer("gophprofile/worker").Start(ctx, "avatar.create_thumbnails")
+	defer telemetry.EndSpan(span, &err)
+
 	avatar, err := w.repo.GetAvatar(ctx, id)
 	if errors.Is(err, domain.ErrAvatarNotFound) {
-		w.log.Info("аватарка удалена до обработки, пропускаю", zap.String("аватарка", id))
+		w.log.Ctx(ctx).Info("аватарка удалена до обработки, пропускаю", zap.String("avatar", id))
 		return nil
 	}
 	if err != nil {
@@ -219,7 +226,7 @@ func (w *Worker) createThumbnails(ctx context.Context, id string) error {
 	if errors.Is(err, domain.ErrAvatarNotFound) {
 		// Аватарку удалили во время обработки: событие удаления не знало о
 		// новых миниатюрах, поэтому удаляем их сами.
-		w.log.Info("аватарка удалена во время обработки, удаляю миниатюры", zap.String("аватарка", id))
+		w.log.Ctx(ctx).Info("аватарка удалена во время обработки, удаляю миниатюры", zap.String("avatar", id))
 		return w.files.Delete(ctx, slices.Sorted(maps.Values(thumbnails))...)
 	}
 

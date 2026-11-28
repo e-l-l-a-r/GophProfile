@@ -239,7 +239,7 @@ func (h *Handler) classifyUploadError(r *http.Request, err error) (int, errorRes
 		return http.StatusBadRequest, errorResponse{Error: "File is required", Details: "Send the image in the form field \"file\""}
 	}
 
-	h.log.Debug("некорректная форма загрузки", zap.String("путь", r.URL.Path), zap.Error(err))
+	h.log.Ctx(r.Context()).Debug("некорректная форма загрузки", zap.String("path", r.URL.Path), zap.Error(err))
 
 	return http.StatusBadRequest, errorResponse{Error: "Invalid request", Details: "Expected multipart/form-data with field \"file\""}
 }
@@ -293,7 +293,7 @@ func (h *Handler) serveImageWithCache(w http.ResponseWriter, r *http.Request, id
 	w.Header().Set("Content-Length", strconv.FormatInt(img.Size, 10))
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(w, img.Body); err != nil {
-		h.log.Debug("передача изображения прервана", zap.String("аватарка", id), zap.Error(err))
+		h.log.Ctx(r.Context()).Debug("передача изображения прервана", zap.String("avatar", id), zap.Error(err))
 	}
 }
 
