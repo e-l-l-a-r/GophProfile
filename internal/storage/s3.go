@@ -11,6 +11,11 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/e-l-l-a-r/gophprofile/internal/telemetry"
 )
 
 // region - регион бакета. Задаётся явно, чтобы клиент не запрашивал
@@ -71,8 +76,19 @@ func NewS3(cfg Config) (*S3, error) {
 	return &S3{client: client, bucket: cfg.Bucket}, nil
 }
 
+func startS3Span(ctx context.Context, operation string) (context.Context, trace.Span) {
+	return otel.Tracer("github.com/e-l-l-a-r/gophprofile/internal/storage").Start(ctx, "s3."+operation,
+		trace.WithSpanKind(trace.SpanKindClient),
+		// peer.service нужен Jaeger для карты зависимостей.
+		trace.WithAttributes(attribute.String("peer.service", "s3")),
+	)
+}
+
 // EnsureBucket создаёт бакет, если его ещё нет.
-func (s *S3) EnsureBucket(ctx context.Context) error {
+func (s *S3) EnsureBucket(ctx context.Context) (err error) {
+	ctx, span := startS3Span(ctx, "EnsureBucket")
+	defer telemetry.EndSpan(span, &err)
+
 	exists, err := s.client.BucketExists(ctx, s.bucket)
 	if err != nil {
 		return fmt.Errorf("не удалось проверить бакет %q: %w", s.bucket, err)
@@ -90,7 +106,10 @@ func (s *S3) EnsureBucket(ctx context.Context) error {
 }
 
 // Ping проверяет доступность хранилища и наличие бакета.
-func (s *S3) Ping(ctx context.Context) error {
+func (s *S3) Ping(ctx context.Context) (err error) {
+	ctx, span := startS3Span(ctx, "Ping")
+	defer telemetry.EndSpan(span, &err)
+
 	exists, err := s.client.BucketExists(ctx, s.bucket)
 	if err != nil {
 		return fmt.Errorf("хранилище файлов недоступно: %w", err)
@@ -104,8 +123,11 @@ func (s *S3) Ping(ctx context.Context) error {
 
 // Put сохраняет объект с ключом key размером size байт и MIME-типом
 // contentType. Существующий объект с тем же ключом перезаписывается.
-func (s *S3) Put(ctx context.Context, key string, body io.Reader, size int64, contentType string) error {
-	_, err := s.client.PutObject(ctx, s.bucket, key, body, size, minio.PutObjectOptions{ContentType: contentType})
+func (s *S3) Put(ctx context.Context, key string, body io.Reader, size int64, contentType string) (err error) {
+	ctx, span := startS3Span(ctx, "Put")
+	defer telemetry.EndSpan(span, &err)
+
+	_, err = s.client.PutObject(ctx, s.bucket, key, body, size, minio.PutObjectOptions{ContentType: contentType})
 	if err != nil {
 		return fmt.Errorf("не удалось сохранить объект %q: %w", key, err)
 	}
@@ -117,7 +139,14 @@ func (s *S3) Put(ctx context.Context, key string, body io.Reader, size int64, co
 // если объекта нет. Ответ S3 на HEAD-запрос не позволяет отличить
 // отсутствие бакета от отсутствия объекта, поэтому наличие бакета
 // обеспечивается заранее вызовом EnsureBucket.
-func (s *S3) Get(ctx context.Context, key string) (Object, error) {
+func (s *S3) Get(ctx context.Context, key string) (_ Object, err error) {
+	ctx, span := startS3Span(ctx, "Get")
+	defer telemetry.EndSpan(span, &err)
+
+	return s.openObject(ctx, key)
+}
+
+func (s *S3) openObject(ctx context.Context, key string) (Object, error) {
 	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
 		return Object{}, s.wrapGetError(key, err)
@@ -136,8 +165,11 @@ func (s *S3) Get(ctx context.Context, key string) (Object, error) {
 
 // Download читает объект с ключом key целиком. Возвращает ErrObjectNotFound,
 // если объекта нет.
-func (s *S3) Download(ctx context.Context, key string) ([]byte, error) {
-	obj, err := s.Get(ctx, key)
+func (s *S3) Download(ctx context.Context, key string) (_ []byte, err error) {
+	ctx, span := startS3Span(ctx, "Download")
+	defer telemetry.EndSpan(span, &err)
+
+	obj, err := s.openObject(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +185,10 @@ func (s *S3) Download(ctx context.Context, key string) ([]byte, error) {
 
 // Delete удаляет объекты с ключами keys. Отсутствие объекта ошибкой не
 // считается, поэтому повторное удаление безопасно.
-func (s *S3) Delete(ctx context.Context, keys ...string) error {
+func (s *S3) Delete(ctx context.Context, keys ...string) (err error) {
+	ctx, span := startS3Span(ctx, "Delete")
+	defer telemetry.EndSpan(span, &err)
+
 	var errs []error
 	for _, key := range keys {
 		if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil && !isNotFound(err) {

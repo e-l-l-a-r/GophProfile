@@ -46,7 +46,7 @@ func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
 			status := statusOK
 			if err := checker.Ping(ctx); err != nil {
 				status = statusUnavailable
-				h.log.Warn("компонент недоступен", zap.String("компонент", name), zap.Error(err))
+				h.log.Ctx(ctx).Warn("компонент недоступен", zap.String("component", name), zap.Error(err))
 			}
 
 			mu.Lock()

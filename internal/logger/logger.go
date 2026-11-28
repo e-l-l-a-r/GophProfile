@@ -1,13 +1,18 @@
-// Package logger предоставляет логгер приложения поверх zap и вспомогательные
-// функции для вывода сведений о сборке. Глобального состояния пакет не
-// содержит: логгер создаётся через New и передаётся потребителям как
-// зависимость.
+// Package logger предоставляет логгер приложения поверх OpenTelemetry bridge
+// для zap и вспомогательные функции для вывода сведений о сборке.
 package logger
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"os"
 
+	"go.opentelemetry.io/contrib/bridges/otelzap"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -15,39 +20,67 @@ import (
 // notAvailable - значение, которое выводится вместо незаданных сведений о сборке.
 const notAvailable = "N/A"
 
-// Logger - логгер приложения поверх zap.Logger.
+// Logger — совместимый с текущими callers zap-логгер, отправляющий записи в OTLP.
 type Logger struct {
 	*zap.Logger
+	provider *sdklog.LoggerProvider
 }
 
-// New создаёт логгер с заданным уровнем логирования ("debug", "info", "warn",
-// "error"; регистр не важен). Записи выводятся в консольном формате в stderr.
+// New создаёт логгер с заданным уровнем логирования и отправляет записи через
+// OTLP gRPC exporter в OpenTelemetry Collector.
 func New(level string) (*Logger, error) {
 	lvl, err := zap.ParseAtomicLevel(level)
 	if err != nil {
 		return nil, fmt.Errorf("некорректный уровень логирования %q: %w", level, err)
 	}
 
-	cfg := zap.NewProductionConfig()
-	cfg.Level = lvl
-	cfg.Encoding = "console"
-	cfg.EncoderConfig.ConsoleSeparator = "\t| "
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	cfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
-
-	log, err := cfg.Build()
+	ctx := context.Background()
+	exporter, err := otlploggrpc.New(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("не удалось создать логгер: %w", err)
+		return nil, fmt.Errorf("не удалось создать OTLP exporter логов: %w", err)
 	}
+	serviceName := os.Getenv("OTEL_SERVICE_NAME")
+	if serviceName == "" {
+		serviceName = "gophprofile"
+	}
+	res, err := resource.New(ctx, resource.WithAttributes(attribute.String("service.name", serviceName)))
+	if err != nil {
+		return nil, fmt.Errorf("не удалось создать ресурс логирования: %w", err)
+	}
+	provider := sdklog.NewLoggerProvider(
+		sdklog.WithResource(res),
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
+	)
+	otelCore := otelzap.NewCore("github.com/e-l-l-a-r/gophprofile", otelzap.WithLoggerProvider(provider), otelzap.WithVersion(serviceName))
+	core := zapcore.NewTee(newStdoutCore(os.Stdout, serviceName), otelCore)
+	log := zap.New(core).WithOptions(zap.IncreaseLevel(lvl))
+	return &Logger{Logger: log, provider: provider}, nil
+}
 
-	return &Logger{Logger: log}, nil
+// Ctx возвращает логгер, записи которого связаны с трейсом из ctx: в OTLP
+// запись получает trace и span из контекста (поле "context" понимает
+// otelzap), а в stdout - поля trace_id и span_id.
+func (l *Logger) Ctx(ctx context.Context) *zap.Logger {
+	return l.Logger.With(zap.Any(contextKey, ctx))
 }
 
 // Nop возвращает логгер, который отбрасывает все записи. Удобен в тестах и
 // там, где логгер не настроен.
 func Nop() *Logger {
 	return &Logger{Logger: zap.NewNop()}
+}
+
+// Shutdown flushes buffered OpenTelemetry log records.
+func (l *Logger) Shutdown(ctx context.Context) error {
+	if l.provider == nil {
+		return nil
+	}
+	return l.provider.Shutdown(ctx)
+}
+
+// Sync flushes buffered OpenTelemetry log records.
+func (l *Logger) Sync() error {
+	return l.Shutdown(context.Background())
 }
 
 // PrintBuildInfo выводит в w версию, дату и коммит сборки. Незаданные

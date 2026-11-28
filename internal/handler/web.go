@@ -178,7 +178,7 @@ func (h *Handler) renderError(w http.ResponseWriter, r *http.Request, status int
 func (h *Handler) render(w http.ResponseWriter, r *http.Request, status int, name string, data any) {
 	var buf bytes.Buffer
 	if err := h.web.Templates.ExecuteTemplate(&buf, name, data); err != nil {
-		h.log.Error("ошибка шаблона", zap.String("шаблон", name), zap.String("путь", r.URL.Path), zap.Error(err))
+		h.log.Ctx(r.Context()).Error("ошибка шаблона", zap.String("template", name), zap.String("path", r.URL.Path), zap.Error(err))
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}

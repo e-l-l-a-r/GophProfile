@@ -54,6 +54,7 @@ func newApp(args []string, errs *serverErrors, infraProvider any) *fx.App {
 			func() (Config, error) { return getConfig(args, os.Stderr) },
 			func() serverErrors { return make(serverErrors, 1) },
 			provideLogger,
+			provideMeterProvider,
 			infraProvider,
 			provideAvatarService,
 			provideRouter,
@@ -61,7 +62,7 @@ func newApp(args []string, errs *serverErrors, infraProvider any) *fx.App {
 			provideHTTPServer,
 		),
 		fx.Populate(errs),
-		fx.Invoke(func(*http.Server) {}),
+		fx.Invoke(registerTracing, func(*http.Server) {}),
 	)
 }
 

@@ -57,7 +57,7 @@ func New(avatars Avatars, web Web, conf Config, log *logger.Logger) *Handler {
 // Routes возвращает маршрутизатор со всеми маршрутами и middleware.
 func (h *Handler) Routes() *chi.Mux {
 	r := chi.NewRouter()
-	r.Use(middleware.RequestID, requestLogger(h.log), recoverer(h.log))
+	r.Use(traceRoute, middleware.RequestID, requestLogger(h.log), recoverer(h.log))
 
 	r.Get("/health", h.health)
 	h.webRoutes(r)

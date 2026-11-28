@@ -13,8 +13,13 @@ import (
 	migratepg "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "github.com/jackc/pgx/v5/stdlib" // драйвер "pgx" для database/sql
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/e-l-l-a-r/gophprofile/internal/domain"
+	"github.com/e-l-l-a-r/gophprofile/internal/telemetry"
 	"github.com/e-l-l-a-r/gophprofile/migrations"
 )
 
@@ -90,8 +95,18 @@ func NewPostgresFromDB(db *sql.DB) *Postgres {
 	return &Postgres{db: db}
 }
 
+func startPostgresSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
+	return otel.Tracer("github.com/e-l-l-a-r/gophprofile/internal/repository").Start(ctx, "postgres."+operation,
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(semconv.DBSystemNamePostgreSQL, attribute.String("peer.service", "postgresql")),
+	)
+}
+
 // Ping проверяет доступность базы данных.
-func (p *Postgres) Ping(ctx context.Context) error {
+func (p *Postgres) Ping(ctx context.Context) (err error) {
+	ctx, span := startPostgresSpan(ctx, "Ping")
+	defer telemetry.EndSpan(span, &err)
+
 	if err := p.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("база данных недоступна: %w", err)
 	}
@@ -136,8 +151,11 @@ func (p *Postgres) Migrate() error {
 // CreateAvatar сохраняет новую аватарку с заданным идентификатором и
 // возвращает её с заполненными CreatedAt и UpdatedAt. Миниатюры у новой
 // аватарки отсутствуют.
-func (p *Postgres) CreateAvatar(ctx context.Context, avatar domain.Avatar) (domain.Avatar, error) {
-	err := p.db.QueryRowContext(ctx, queryCreateAvatar,
+func (p *Postgres) CreateAvatar(ctx context.Context, avatar domain.Avatar) (_ domain.Avatar, err error) {
+	ctx, span := startPostgresSpan(ctx, "CreateAvatar")
+	defer telemetry.EndSpan(span, &err)
+
+	err = p.db.QueryRowContext(ctx, queryCreateAvatar,
 		avatar.ID, avatar.UserID, avatar.FileName, avatar.MimeType, avatar.SizeBytes,
 		avatar.Width, avatar.Height, avatar.S3Key, avatar.UploadStatus, avatar.ProcessingStatus,
 	).Scan(&avatar.CreatedAt, &avatar.UpdatedAt)
@@ -153,7 +171,10 @@ func (p *Postgres) CreateAvatar(ctx context.Context, avatar domain.Avatar) (doma
 
 // GetAvatar возвращает неудалённую аватарку по идентификатору или
 // domain.ErrAvatarNotFound.
-func (p *Postgres) GetAvatar(ctx context.Context, id string) (domain.Avatar, error) {
+func (p *Postgres) GetAvatar(ctx context.Context, id string) (_ domain.Avatar, err error) {
+	ctx, span := startPostgresSpan(ctx, "GetAvatar")
+	defer telemetry.EndSpan(span, &err)
+
 	avatar, err := scanAvatar(p.db.QueryRowContext(ctx, queryGetAvatar, id))
 	if err != nil {
 		return domain.Avatar{}, notFoundOr(err, "не удалось получить аватарку")
@@ -164,7 +185,10 @@ func (p *Postgres) GetAvatar(ctx context.Context, id string) (domain.Avatar, err
 
 // LatestAvatar возвращает самую новую неудалённую аватарку пользователя или
 // domain.ErrAvatarNotFound, если аватарок у него нет.
-func (p *Postgres) LatestAvatar(ctx context.Context, userID string) (domain.Avatar, error) {
+func (p *Postgres) LatestAvatar(ctx context.Context, userID string) (_ domain.Avatar, err error) {
+	ctx, span := startPostgresSpan(ctx, "LatestAvatar")
+	defer telemetry.EndSpan(span, &err)
+
 	avatar, err := scanAvatar(p.db.QueryRowContext(ctx, queryLatestAvatar, userID))
 	if err != nil {
 		return domain.Avatar{}, notFoundOr(err, "не удалось получить аватарку пользователя")
@@ -174,7 +198,10 @@ func (p *Postgres) LatestAvatar(ctx context.Context, userID string) (domain.Avat
 }
 
 // ListAvatars возвращает неудалённые аватарки пользователя от новых к старым.
-func (p *Postgres) ListAvatars(ctx context.Context, userID string) ([]domain.Avatar, error) {
+func (p *Postgres) ListAvatars(ctx context.Context, userID string) (_ []domain.Avatar, err error) {
+	ctx, span := startPostgresSpan(ctx, "ListAvatars")
+	defer telemetry.EndSpan(span, &err)
+
 	rows, err := p.db.QueryContext(ctx, queryListAvatars, userID)
 	if err != nil {
 		return nil, fmt.Errorf("не удалось получить список аватарок: %w", err)
@@ -199,7 +226,10 @@ func (p *Postgres) ListAvatars(ctx context.Context, userID string) ([]domain.Ava
 // SoftDeleteAvatar помечает аватарку удалённой и возвращает её состояние после
 // удаления: по нему вызывающий узнаёт ключи файлов для удаления из хранилища.
 // Возвращает domain.ErrAvatarNotFound, если аватарки нет или она уже удалена.
-func (p *Postgres) SoftDeleteAvatar(ctx context.Context, id string) (domain.Avatar, error) {
+func (p *Postgres) SoftDeleteAvatar(ctx context.Context, id string) (_ domain.Avatar, err error) {
+	ctx, span := startPostgresSpan(ctx, "SoftDeleteAvatar")
+	defer telemetry.EndSpan(span, &err)
+
 	avatar, err := scanAvatar(p.db.QueryRowContext(ctx, querySoftDelete, id))
 	if err != nil {
 		return domain.Avatar{}, notFoundOr(err, "не удалось удалить аватарку")
@@ -211,13 +241,13 @@ func (p *Postgres) SoftDeleteAvatar(ctx context.Context, id string) (domain.Avat
 // UpdateUploadStatus меняет состояние загрузки неудалённой аватарки.
 // Возвращает domain.ErrAvatarNotFound, если аватарки нет или она удалена.
 func (p *Postgres) UpdateUploadStatus(ctx context.Context, id string, status domain.UploadStatus) error {
-	return p.execOne(ctx, "не удалось изменить состояние загрузки", queryUpdateUploadStatus, id, status)
+	return p.execOne(ctx, "UpdateUploadStatus", "не удалось изменить состояние загрузки", queryUpdateUploadStatus, id, status)
 }
 
 // UpdateProcessingStatus меняет состояние обработки неудалённой аватарки.
 // Возвращает domain.ErrAvatarNotFound, если аватарки нет или она удалена.
 func (p *Postgres) UpdateProcessingStatus(ctx context.Context, id string, status domain.ProcessingStatus) error {
-	return p.execOne(ctx, "не удалось изменить состояние обработки", queryUpdateProcessingStatus, id, status)
+	return p.execOne(ctx, "UpdateProcessingStatus", "не удалось изменить состояние обработки", queryUpdateProcessingStatus, id, status)
 }
 
 // CompleteProcessing сохраняет ключи миниатюр и переводит обработку
@@ -229,12 +259,15 @@ func (p *Postgres) CompleteProcessing(ctx context.Context, id string, thumbnails
 		return fmt.Errorf("не удалось сериализовать ключи миниатюр: %w", err)
 	}
 
-	return p.execOne(ctx, "не удалось завершить обработку", queryCompleteProcessing, id, string(keys))
+	return p.execOne(ctx, "CompleteProcessing", "не удалось завершить обработку", queryCompleteProcessing, id, string(keys))
 }
 
 // IsMessageProcessed сообщает, обработано ли уже сообщение брокера с
 // идентификатором messageID.
-func (p *Postgres) IsMessageProcessed(ctx context.Context, messageID string) (bool, error) {
+func (p *Postgres) IsMessageProcessed(ctx context.Context, messageID string) (_ bool, err error) {
+	ctx, span := startPostgresSpan(ctx, "IsMessageProcessed")
+	defer telemetry.EndSpan(span, &err)
+
 	var processed bool
 	if err := p.db.QueryRowContext(ctx, queryIsMessageProcessed, messageID).Scan(&processed); err != nil {
 		return false, fmt.Errorf("не удалось проверить обработку сообщения: %w", err)
@@ -245,7 +278,10 @@ func (p *Postgres) IsMessageProcessed(ctx context.Context, messageID string) (bo
 
 // MarkMessageProcessed запоминает, что сообщение брокера с идентификатором
 // messageID обработано. Повторная отметка ошибкой не считается.
-func (p *Postgres) MarkMessageProcessed(ctx context.Context, messageID string) error {
+func (p *Postgres) MarkMessageProcessed(ctx context.Context, messageID string) (err error) {
+	ctx, span := startPostgresSpan(ctx, "MarkMessageProcessed")
+	defer telemetry.EndSpan(span, &err)
+
 	if _, err := p.db.ExecContext(ctx, queryMarkMessageProcessed, messageID); err != nil {
 		return fmt.Errorf("не удалось отметить сообщение обработанным: %w", err)
 	}
@@ -255,7 +291,10 @@ func (p *Postgres) MarkMessageProcessed(ctx context.Context, messageID string) e
 
 // execOne выполняет изменяющий запрос, который должен затронуть ровно одну
 // аватарку, и возвращает domain.ErrAvatarNotFound, если не затронул ни одной.
-func (p *Postgres) execOne(ctx context.Context, action, query string, args ...any) error {
+func (p *Postgres) execOne(ctx context.Context, operation, action, query string, args ...any) (err error) {
+	ctx, span := startPostgresSpan(ctx, operation)
+	defer telemetry.EndSpan(span, &err)
+
 	res, err := p.db.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("%s: %w", action, err)

@@ -48,8 +48,8 @@ func classifyError(r *http.Request, log *logger.Logger, err error) (status int, 
 	case errors.Is(err, domain.ErrInvalidParameter):
 		return http.StatusBadRequest, errorResponse{Error: "Invalid parameter", Details: err.Error()}
 	default:
-		log.Error("ошибка обработки запроса",
-			zap.String("метод", r.Method), zap.String("путь", r.URL.Path), zap.Error(err))
+		log.Ctx(r.Context()).Error("ошибка обработки запроса",
+			zap.String("method", r.Method), zap.String("path", r.URL.Path), zap.Error(err))
 		return http.StatusInternalServerError, errorResponse{Error: "Internal server error"}
 	}
 }

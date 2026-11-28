@@ -94,12 +94,12 @@ func TestUpload_Success(t *testing.T) {
 	data := pngImage(t, 40, 30)
 
 	var id string
-	m.repo.EXPECT().CreateAvatar(ctx, createdAvatar(len(data))).RunAndReturn(
+	m.repo.EXPECT().CreateAvatar(mock.Anything, createdAvatar(len(data))).RunAndReturn(
 		func(ctx context.Context, a domain.Avatar) (domain.Avatar, error) {
 			id = a.ID
 			return echoCreate(ctx, a)
 		}).Once()
-	m.files.EXPECT().Put(ctx, mock.AnythingOfType("string"), mock.Anything, int64(len(data)), "image/png").
+	m.files.EXPECT().Put(mock.Anything, mock.AnythingOfType("string"), mock.Anything, int64(len(data)), "image/png").
 		RunAndReturn(func(_ context.Context, key string, body io.Reader, _ int64, _ string) error {
 			assert.Equal(t, domain.OriginalKey(id, "png"), key)
 			got, err := io.ReadAll(body)
@@ -107,8 +107,8 @@ func TestUpload_Success(t *testing.T) {
 			assert.Equal(t, data, got)
 			return nil
 		}).Once()
-	m.repo.EXPECT().UpdateUploadStatus(ctx, mock.Anything, domain.UploadStatusUploaded).Return(nil).Once()
-	m.pub.EXPECT().Publish(ctx, domain.RoutingKeyAvatarUploaded, mock.Anything).
+	m.repo.EXPECT().UpdateUploadStatus(mock.Anything, mock.Anything, domain.UploadStatusUploaded).Return(nil).Once()
+	m.pub.EXPECT().Publish(mock.Anything, domain.RoutingKeyAvatarUploaded, mock.Anything).
 		RunAndReturn(func(_ context.Context, _ string, event any) error {
 			assert.Equal(t, domain.AvatarUploadEvent{AvatarID: id, UserID: testUser, S3Key: domain.OriginalKey(id, "png")}, event)
 			return nil
@@ -134,7 +134,7 @@ func TestUpload_Failures(t *testing.T) {
 
 	t.Run("сбой репозитория", func(t *testing.T) {
 		svc, m := newService(t)
-		m.repo.EXPECT().CreateAvatar(ctx, mock.Anything).Return(domain.Avatar{}, errBoom).Once()
+		m.repo.EXPECT().CreateAvatar(mock.Anything, mock.Anything).Return(domain.Avatar{}, errBoom).Once()
 
 		_, err := svc.Upload(ctx, UploadInput{UserID: testUser, Data: pngImage(t, 4, 4)})
 		require.ErrorIs(t, err, errBoom)
@@ -142,9 +142,9 @@ func TestUpload_Failures(t *testing.T) {
 
 	t.Run("сбой хранилища - состояние failed", func(t *testing.T) {
 		svc, m := newService(t)
-		m.repo.EXPECT().CreateAvatar(ctx, mock.Anything).RunAndReturn(echoCreate).Once()
-		m.files.EXPECT().Put(ctx, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(errBoom).Once()
-		m.repo.EXPECT().UpdateUploadStatus(ctx, mock.Anything, domain.UploadStatusFailed).Return(nil).Once()
+		m.repo.EXPECT().CreateAvatar(mock.Anything, mock.Anything).RunAndReturn(echoCreate).Once()
+		m.files.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(errBoom).Once()
+		m.repo.EXPECT().UpdateUploadStatus(mock.Anything, mock.Anything, domain.UploadStatusFailed).Return(nil).Once()
 
 		_, err := svc.Upload(ctx, UploadInput{UserID: testUser, Data: pngImage(t, 4, 4)})
 		require.ErrorIs(t, err, errBoom)
@@ -152,9 +152,9 @@ func TestUpload_Failures(t *testing.T) {
 
 	t.Run("сбой отметки загрузки", func(t *testing.T) {
 		svc, m := newService(t)
-		m.repo.EXPECT().CreateAvatar(ctx, mock.Anything).RunAndReturn(echoCreate).Once()
-		m.files.EXPECT().Put(ctx, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
-		m.repo.EXPECT().UpdateUploadStatus(ctx, mock.Anything, domain.UploadStatusUploaded).Return(errBoom).Once()
+		m.repo.EXPECT().CreateAvatar(mock.Anything, mock.Anything).RunAndReturn(echoCreate).Once()
+		m.files.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+		m.repo.EXPECT().UpdateUploadStatus(mock.Anything, mock.Anything, domain.UploadStatusUploaded).Return(errBoom).Once()
 
 		_, err := svc.Upload(ctx, UploadInput{UserID: testUser, Data: pngImage(t, 4, 4)})
 		require.ErrorIs(t, err, errBoom)
@@ -162,14 +162,17 @@ func TestUpload_Failures(t *testing.T) {
 
 	t.Run("сбой публикации - обработка failed", func(t *testing.T) {
 		svc, m := newService(t)
-		m.repo.EXPECT().CreateAvatar(ctx, mock.Anything).RunAndReturn(echoCreate).Once()
-		m.files.EXPECT().Put(ctx, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
-		m.repo.EXPECT().UpdateUploadStatus(ctx, mock.Anything, domain.UploadStatusUploaded).Return(nil).Once()
-		m.pub.EXPECT().Publish(ctx, mock.Anything, mock.Anything).Return(errBoom).Once()
-		m.repo.EXPECT().UpdateProcessingStatus(ctx, mock.Anything, domain.ProcessingStatusFailed).Return(nil).Once()
+		m.repo.EXPECT().CreateAvatar(mock.Anything, mock.Anything).RunAndReturn(echoCreate).Once()
+		m.files.EXPECT().Put(mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Once()
+		m.repo.EXPECT().UpdateUploadStatus(mock.Anything, mock.Anything, domain.UploadStatusUploaded).Return(nil).Once()
+		m.pub.EXPECT().Publish(mock.Anything, mock.Anything, mock.Anything).Return(errBoom).Once()
+		m.repo.EXPECT().UpdateProcessingStatus(mock.Anything, mock.Anything, domain.ProcessingStatusFailed).Return(nil).Once()
 
-		_, err := svc.Upload(ctx, UploadInput{UserID: testUser, Data: pngImage(t, 4, 4)})
-		require.ErrorIs(t, err, errBoom)
+		got, err := svc.Upload(ctx, UploadInput{UserID: testUser, Data: pngImage(t, 4, 4)})
+		require.NoError(t, err)
+		assert.NotEmpty(t, got.ID)
+		assert.Equal(t, domain.UploadStatusUploaded, got.UploadStatus)
+		assert.Equal(t, domain.ProcessingStatusFailed, got.ProcessingStatus)
 	})
 }
 
@@ -203,8 +206,8 @@ func TestDelete(t *testing.T) {
 	t.Run("своя аватарка", func(t *testing.T) {
 		svc, m := newService(t)
 		m.repo.EXPECT().GetAvatar(ctx, testID).Return(storedAvatar(), nil).Once()
-		m.repo.EXPECT().SoftDeleteAvatar(ctx, testID).Return(storedAvatar(), nil).Once()
-		m.pub.EXPECT().Publish(ctx, domain.RoutingKeyAvatarDeleted, deleteEvent).Return(nil).Once()
+		m.repo.EXPECT().SoftDeleteAvatar(mock.Anything, testID).Return(storedAvatar(), nil).Once()
+		m.pub.EXPECT().Publish(mock.Anything, domain.RoutingKeyAvatarDeleted, deleteEvent).Return(nil).Once()
 
 		require.NoError(t, svc.Delete(ctx, testID, testUser))
 	})
@@ -226,7 +229,7 @@ func TestDelete(t *testing.T) {
 	t.Run("удалена параллельно", func(t *testing.T) {
 		svc, m := newService(t)
 		m.repo.EXPECT().GetAvatar(ctx, testID).Return(storedAvatar(), nil).Once()
-		m.repo.EXPECT().SoftDeleteAvatar(ctx, testID).Return(domain.Avatar{}, domain.ErrAvatarNotFound).Once()
+		m.repo.EXPECT().SoftDeleteAvatar(mock.Anything, testID).Return(domain.Avatar{}, domain.ErrAvatarNotFound).Once()
 
 		require.ErrorIs(t, svc.Delete(ctx, testID, testUser), domain.ErrAvatarNotFound)
 	})
@@ -234,8 +237,8 @@ func TestDelete(t *testing.T) {
 	t.Run("сбой публикации не мешает удалению", func(t *testing.T) {
 		svc, m := newService(t)
 		m.repo.EXPECT().GetAvatar(ctx, testID).Return(storedAvatar(), nil).Once()
-		m.repo.EXPECT().SoftDeleteAvatar(ctx, testID).Return(storedAvatar(), nil).Once()
-		m.pub.EXPECT().Publish(ctx, domain.RoutingKeyAvatarDeleted, deleteEvent).Return(errBoom).Once()
+		m.repo.EXPECT().SoftDeleteAvatar(mock.Anything, testID).Return(storedAvatar(), nil).Once()
+		m.pub.EXPECT().Publish(mock.Anything, domain.RoutingKeyAvatarDeleted, deleteEvent).Return(errBoom).Once()
 
 		require.NoError(t, svc.Delete(ctx, testID, testUser))
 	})
@@ -247,8 +250,8 @@ func TestDeleteLatest(t *testing.T) {
 	t.Run("своя", func(t *testing.T) {
 		svc, m := newService(t)
 		m.repo.EXPECT().LatestAvatar(ctx, testUser).Return(storedAvatar(), nil).Once()
-		m.repo.EXPECT().SoftDeleteAvatar(ctx, testID).Return(storedAvatar(), nil).Once()
-		m.pub.EXPECT().Publish(ctx, domain.RoutingKeyAvatarDeleted, mock.Anything).Return(nil).Once()
+		m.repo.EXPECT().SoftDeleteAvatar(mock.Anything, testID).Return(storedAvatar(), nil).Once()
+		m.pub.EXPECT().Publish(mock.Anything, domain.RoutingKeyAvatarDeleted, mock.Anything).Return(nil).Once()
 
 		require.NoError(t, svc.DeleteLatest(ctx, testUser, testUser))
 	})
@@ -295,8 +298,8 @@ func TestImage(t *testing.T) {
 
 	t.Run("оригинал потоком", func(t *testing.T) {
 		svc, m := newService(t)
-		m.repo.EXPECT().GetAvatar(ctx, testID).Return(avatar, nil).Once()
-		m.files.EXPECT().Get(ctx, avatar.S3Key).Return(object(original), nil).Once()
+		m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(avatar, nil).Once()
+		m.files.EXPECT().Get(mock.Anything, avatar.S3Key).Return(object(original), nil).Once()
 
 		img, err := svc.Image(ctx, testID, ImageRequest{Size: imageproc.SizeOriginal})
 		require.NoError(t, err)
@@ -306,8 +309,8 @@ func TestImage(t *testing.T) {
 
 	t.Run("готовая миниатюра потоком", func(t *testing.T) {
 		svc, m := newService(t)
-		m.repo.EXPECT().GetAvatar(ctx, testID).Return(avatar, nil).Once()
-		m.files.EXPECT().Get(ctx, avatar.Thumbnails["100x100"]).Return(object(thumb), nil).Once()
+		m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(avatar, nil).Once()
+		m.files.EXPECT().Get(mock.Anything, avatar.Thumbnails["100x100"]).Return(object(thumb), nil).Once()
 
 		img, err := svc.Image(ctx, testID, ImageRequest{Size: "100x100", Format: "png"})
 		require.NoError(t, err)
@@ -317,8 +320,8 @@ func TestImage(t *testing.T) {
 
 	t.Run("миниатюра в другом формате", func(t *testing.T) {
 		svc, m := newService(t)
-		m.repo.EXPECT().GetAvatar(ctx, testID).Return(avatar, nil).Once()
-		m.files.EXPECT().Download(ctx, avatar.Thumbnails["100x100"]).Return(thumb, nil).Once()
+		m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(avatar, nil).Once()
+		m.files.EXPECT().Download(mock.Anything, avatar.Thumbnails["100x100"]).Return(thumb, nil).Once()
 
 		img, err := svc.Image(ctx, testID, ImageRequest{Size: "100x100", Format: "webp"})
 		require.NoError(t, err)
@@ -331,8 +334,8 @@ func TestImage(t *testing.T) {
 		pending := avatar
 		pending.Thumbnails = nil
 		pending.ProcessingStatus = domain.ProcessingStatusProcessing
-		m.repo.EXPECT().GetAvatar(ctx, testID).Return(pending, nil).Once()
-		m.files.EXPECT().Download(ctx, avatar.S3Key).Return(original, nil).Once()
+		m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(pending, nil).Once()
+		m.files.EXPECT().Download(mock.Anything, avatar.S3Key).Return(original, nil).Once()
 
 		img, err := svc.Image(ctx, testID, ImageRequest{Size: "300x300"})
 		require.NoError(t, err)
@@ -341,8 +344,8 @@ func TestImage(t *testing.T) {
 
 	t.Run("оригинал в другом формате", func(t *testing.T) {
 		svc, m := newService(t)
-		m.repo.EXPECT().GetAvatar(ctx, testID).Return(avatar, nil).Once()
-		m.files.EXPECT().Download(ctx, avatar.S3Key).Return(original, nil).Once()
+		m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(avatar, nil).Once()
+		m.files.EXPECT().Download(mock.Anything, avatar.S3Key).Return(original, nil).Once()
 
 		img, err := svc.Image(ctx, testID, ImageRequest{Format: "jpeg"})
 		require.NoError(t, err)
@@ -364,7 +367,7 @@ func TestImage_Errors(t *testing.T) {
 		{
 			name: "не найдена", wantErr: domain.ErrAvatarNotFound,
 			setup: func(m mocks) {
-				m.repo.EXPECT().GetAvatar(ctx, testID).Return(domain.Avatar{}, domain.ErrAvatarNotFound).Once()
+				m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(domain.Avatar{}, domain.ErrAvatarNotFound).Once()
 			},
 		},
 		{
@@ -372,21 +375,21 @@ func TestImage_Errors(t *testing.T) {
 			setup: func(m mocks) {
 				a := storedAvatar()
 				a.UploadStatus = domain.UploadStatusUploading
-				m.repo.EXPECT().GetAvatar(ctx, testID).Return(a, nil).Once()
+				m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(a, nil).Once()
 			},
 		},
 		{
 			name: "файл пропал из хранилища", wantErr: storage.ErrObjectNotFound,
 			setup: func(m mocks) {
-				m.repo.EXPECT().GetAvatar(ctx, testID).Return(storedAvatar(), nil).Once()
-				m.files.EXPECT().Get(ctx, mock.Anything).Return(storage.Object{}, storage.ErrObjectNotFound).Once()
+				m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(storedAvatar(), nil).Once()
+				m.files.EXPECT().Get(mock.Anything, mock.Anything).Return(storage.Object{}, storage.ErrObjectNotFound).Once()
 			},
 		},
 		{
 			name: "сбой скачивания", req: ImageRequest{Format: "webp"}, wantErr: errBoom,
 			setup: func(m mocks) {
-				m.repo.EXPECT().GetAvatar(ctx, testID).Return(storedAvatar(), nil).Once()
-				m.files.EXPECT().Download(ctx, mock.Anything).Return(nil, errBoom).Once()
+				m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(storedAvatar(), nil).Once()
+				m.files.EXPECT().Download(mock.Anything, mock.Anything).Return(nil, errBoom).Once()
 			},
 		},
 		{
@@ -394,7 +397,7 @@ func TestImage_Errors(t *testing.T) {
 			setup: func(m mocks) {
 				a := storedAvatar()
 				a.MimeType = "image/gif"
-				m.repo.EXPECT().GetAvatar(ctx, testID).Return(a, nil).Once()
+				m.repo.EXPECT().GetAvatar(mock.Anything, testID).Return(a, nil).Once()
 			},
 		},
 	}

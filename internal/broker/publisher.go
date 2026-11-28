@@ -9,8 +9,12 @@ import (
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/e-l-l-a-r/gophprofile/internal/retry"
+	"github.com/e-l-l-a-r/gophprofile/internal/telemetry"
 )
 
 // errNotConfirmed возвращается, если брокер отверг опубликованное сообщение.
@@ -21,11 +25,21 @@ var errNotConfirmed = errors.New("брокер не подтвердил соо�
 // брокера и получает уникальный MessageId, который при повторах публикации
 // не меняется: по нему воркер распознаёт повторную доставку. Временные сбои
 // повторяются с экспоненциальной задержкой.
-func (c *Client) Publish(ctx context.Context, routingKey string, event any) error {
+func (c *Client) Publish(ctx context.Context, routingKey string, event any) (err error) {
+	ctx, span := otel.Tracer("gophprofile/broker").Start(ctx, "rabbitmq.publish",
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(attribute.String("messaging.system", "rabbitmq"), attribute.String("peer.service", "rabbitmq"),
+			attribute.String("messaging.destination.name", Exchange),
+			attribute.String("messaging.rabbitmq.destination.routing_key", routingKey)),
+	)
+	defer telemetry.EndSpan(span, &err)
+
 	msg, err := newPublishing(routingKey, event)
 	if err != nil {
 		return err
 	}
+	msg.Headers = amqp.Table{}
+	otel.GetTextMapPropagator().Inject(ctx, traceHeaders(msg.Headers))
 
 	if err := retry.Do(ctx, c.retry, func(ctx context.Context) error {
 		return c.publishOnce(ctx, routingKey, msg)

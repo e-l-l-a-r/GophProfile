@@ -33,6 +33,7 @@ import (
 	"github.com/e-l-l-a-r/gophprofile/internal/repository"
 	"github.com/e-l-l-a-r/gophprofile/internal/retry"
 	"github.com/e-l-l-a-r/gophprofile/internal/storage"
+	"github.com/e-l-l-a-r/gophprofile/internal/telemetry"
 	"github.com/e-l-l-a-r/gophprofile/internal/worker"
 )
 
@@ -77,17 +78,38 @@ func run(ctx context.Context, args []string) (err error) {
 		return err
 	}
 
-	log, err := logger.New(conf.LogLevel)
+	lg, err := logger.New(conf.LogLevel)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = log.Sync() }()
+	defer func() { _ = lg.Sync() }()
+
+	provider, err := telemetry.NewTracerProvider(ctx, "gophprofile-worker")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		err = errors.Join(err, telemetry.ShutdownTracerProvider(context.Background(), provider))
+	}()
+
+	meterProvider, err := telemetry.NewMeterProvider(ctx, "gophprofile-worker")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err = errors.Join(err, meterProvider.Shutdown(shutdownCtx))
+	}()
 
 	pg, err := repository.NewPostgres(conf.DatabaseDSN)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, pg.Close()) }()
+	if _, err = pg.RegisterDBMetrics(); err != nil {
+		return err
+	}
 
 	s3, err := storage.NewS3(storage.Config{
 		Endpoint:  conf.S3Endpoint,
@@ -100,7 +122,7 @@ func run(ctx context.Context, args []string) (err error) {
 		return err
 	}
 
-	mq := broker.New(conf.RabbitMQURL, log)
+	mq := broker.New(conf.RabbitMQURL, lg)
 	defer func() { err = errors.Join(err, mq.Close()) }()
 
 	if err = start(ctx, pg, s3, mq); err != nil {
@@ -109,11 +131,11 @@ func run(ctx context.Context, args []string) (err error) {
 
 	policy := retry.Default()
 	policy.MaxAttempts = conf.MaxRetries
-	w := worker.New(pg, s3, policy, conf.Concurrency, log)
+	w := worker.New(pg, s3, policy, conf.Concurrency, lg)
 
-	log.Info("воркер запущен", zap.Int("обработчиков", conf.Concurrency), zap.Int("попыток", conf.MaxRetries))
+	lg.Info("воркер запущен", zap.Int("handlers", conf.Concurrency), zap.Int("attempts", conf.MaxRetries))
 	err = w.Run(ctx, mq)
-	log.Info("воркер остановлен")
+	lg.Info("воркер остановлен")
 
 	return err
 }
